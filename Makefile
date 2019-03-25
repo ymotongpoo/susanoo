@@ -13,13 +13,22 @@
 # limitations under the License.
 
 TARGET=susanoo
+USER=pi
+HOST=pimoroni2.local
 
-.PHONY: clean
+.PHONY: clean deploy
 
 build: main.go
 	go build -o $(TARGET) -ldflags \
 		"-X main.OWMAPIKey=$(OWM_API_KEY) -X main.DarkSkyAPIKey=$(DARK_SKY_API_KEY)"
 
+armbuild: main.go
+	GOOS=linux GOARCH=arm GOARM=6 go build -o $(TARGET) -ldflags \
+		"-X main.OWMAPIKey=$(OWM_API_KEY) -X main.DarkSkyAPIKey=$(DARK_SKY_API_KEY)"
+
 clean:
 	go clean
 	rm -rf $(TARGET)
+
+deploy: clean armbuild
+	scp $(TARGET) $(USER)@$(HOST):~/susanoo/$(TARGET)

@@ -15,13 +15,91 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
+	"contrib.go.opencensus.io/exporter/stackdriver"
 	owm "github.com/briandowns/openweathermap"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/stats/view"
+	"go.opencensus.io/tag"
+)
+
+const (
+	// OCReportInterval is the interval for OpenCensus to send stats data to
+	// Stackdriver Monitoring via its exporter.
+	// NOTE: this value should not be no less than 1 minute. Detailes are in the doc.
+	// https://cloud.google.com/monitoring/custom-metrics/creating-metrics#writing-ts
+	OCReportInterval = 60 * time.Second
+
+	// Measure namess for respecitive OpenCensus Measure
+	MeasureTemperature = "temperature"
+	MeasurePressure    = "pressure"
+	MeasureHumidity    = "humidity"
+	MeasureWindSpeed   = "windspeed"
+	MeasureWindDeg     = "winddeg"
+
+	// Units are used to define Measures of OpenCensus.
+	TemperatureUnit = "C"
+	PressureUnit    = "hPa"
+	HumidityUnit    = "%"
+	WindSpeedUnit   = "mps"
+	WindDegUnit     = "degree"
+
+	// ResouceNamespace is used for the exporter to have resource labels.
+	ResourceNamespace = "ymotongpoo"
+)
+
+var (
+	// Measure variables
+	MTemperature = stats.Float64(MeasureTemperature, "air temperature", TemperatureUnit)
+	MPressure    = stats.Float64(MeasurePressure, "barometric pressure", PressureUnit)
+	MHumidity    = stats.Int64(MeasureHumidity, "air humidity", HumidityUnit)
+	MWindSpeed   = stats.Float64(MeasureWindSpeed, "wind speed", WindSpeedUnit)
+	MWindDeg     = stats.Float64(MeasureWindDeg, "wind degree from North", WindDegUnit)
+
+	TemperatureView = &view.View{
+		Name:        MeasureTemperature,
+		Measure:     MTemperature,
+		Description: "air temperature",
+		Aggregation: view.LastValue(),
+	}
+
+	PressureView = &view.View{
+		Name:        MeasurePressure,
+		Measure:     MPressure,
+		Description: "barometric pressure",
+		Aggregation: view.LastValue(),
+	}
+
+	HumidityView = &view.View{
+		Name:        MeasureHumidity,
+		Measure:     MHumidity,
+		Description: "air humidity",
+		Aggregation: view.LastValue(),
+	}
+
+	WindSpeedView = &view.View{
+		Name:        MeasureWindSpeed,
+		Measure:     MWindSpeed,
+		Description: "wind speed",
+		Aggregation: view.LastValue(),
+	}
+
+	WeatherReportViews = []*view.View{
+		TemperatureView,
+		PressureView,
+		HumidityView,
+		WindSpeedView,
+	}
+
+	// KeyNodeId is the key for label in "generic_node",
+	KeyNodeId, _ = tag.NewKey("node_id")
 )
 
 const (
@@ -72,6 +150,9 @@ type Weather struct {
 func main() {
 	owmw, owmuv := InitOpenWeatherMap()
 
+	exporter := InitExporter()
+	InitOpenCensusStats(exporter)
+
 	owmTicker := time.NewTicker(OWMPollInterval)
 	dsTicker := time.NewTicker(DarkSkyPollInterval)
 	for {
@@ -79,13 +160,62 @@ func main() {
 		case <-owmTicker.C:
 			owmw.CurrentByCoordinates(TargetCoodinates)
 			w := OWMToWeather(owmw, owmuv)
-			fmt.Printf("OWM: Weather: %s, Temp: %f, Pressure: %f, Humidity: %d, UV: %f\n", w.Weather, w.Temperature, w.Pressure, w.Humidity, w.UV)
+			RecordMeasurement("openweathermap", w)
 		case <-dsTicker.C:
 			f := CallDarkSkyForecast()
 			w := DSToWeather(f)
-			fmt.Printf("DS: Weather: %s, Temp: %f, Pressure: %f, Humidity: %d, UV: %f\n", w.Weather, w.Temperature, w.Pressure, w.Humidity, w.UV)
+			RecordMeasurement("darksky", w)
 		}
 	}
+}
+
+type GenericNodeMonitoredResource struct{}
+
+func (mr *GenericNodeMonitoredResource) MonitoredResource() (string, map[string]string) {
+	labels := map[string]string{
+		"location":  "asia-northeast1-a",
+		"namespace": "ymotongpoo",
+		"node_id":   "public",
+	}
+	return "generic_node", labels
+}
+
+func GetMetricType(v *view.View) string {
+	return fmt.Sprintf("custom.googleapis.com/%s", v.Name)
+}
+
+func InitExporter() *stackdriver.Exporter {
+	exporter, err := stackdriver.NewExporter(stackdriver.Options{
+		ProjectID:         os.Getenv("GOOGLE_CLOUD_PROJECT"),
+		Location:          "asia-northeast1-a",
+		MonitoredResource: &GenericNodeMonitoredResource{},
+		GetMetricType:     GetMetricType,
+	})
+	if err != nil {
+		log.Fatal("failed to initialize ")
+	}
+	return exporter
+}
+
+func InitOpenCensusStats(exporter *stackdriver.Exporter) {
+	view.SetReportingPeriod(OCReportInterval)
+	view.RegisterExporter(exporter)
+	view.Register(WeatherReportViews...)
+}
+
+func RecordMeasurement(id string, w *Weather) {
+	ctx, err := tag.New(context.Background(), tag.Insert(KeyNodeId, id))
+	if err != nil {
+		log.Println("failed to add tag.")
+		return
+	}
+
+	stats.Record(ctx,
+		MTemperature.M(w.Temperature),
+		MPressure.M(w.Pressure),
+		MHumidity.M(int64(w.Humidity)),
+		MWindSpeed.M(w.WindSpeed),
+	)
 }
 
 func InitOpenWeatherMap() (*owm.CurrentWeatherData, *owm.UV) {
