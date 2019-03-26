@@ -23,11 +23,14 @@ import (
 	"os"
 	"time"
 
+	"go.uber.org/zap/zapcore"
+
 	"contrib.go.opencensus.io/exporter/stackdriver"
 	owm "github.com/briandowns/openweathermap"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
+	"go.uber.org/zap"
 )
 
 const (
@@ -94,7 +97,7 @@ var (
 	WeatherReportViews = []*view.View{
 		TemperatureView,
 		PressureView,
-		HumidityView,
+		//HumidityView,
 		WindSpeedView,
 	}
 
@@ -132,6 +135,8 @@ var (
 		Longitude: TargetCityLongitude,
 		Latitude:  TargetCityLatitude,
 	}
+
+	logger *zap.SugaredLogger
 )
 
 type Weather struct {
@@ -147,10 +152,39 @@ type Weather struct {
 	UV          float64
 }
 
+func init() {
+	cfg := zap.Config{
+		Encoding:         "json",
+		Level:            zap.NewAtomicLevelAt(zapcore.DebugLevel),
+		OutputPaths:      []string{"stdout"},
+		ErrorOutputPaths: []string{"stderr"},
+		EncoderConfig: zapcore.EncoderConfig{
+			MessageKey:     "message",
+			LevelKey:       "severity",
+			EncodeLevel:    zapcore.LowercaseLevelEncoder,
+			TimeKey:        "timestamp",
+			EncodeTime:     zapcore.ISO8601TimeEncoder,
+			EncodeDuration: zapcore.StringDurationEncoder,
+			CallerKey:      "caller",
+			EncodeCaller:   zapcore.ShortCallerEncoder,
+		},
+	}
+
+	l, err := cfg.Build()
+	if err != nil {
+		log.Fatalf("failed to create logger: %v", err)
+	}
+	logger = l.Sugar()
+}
+
 func main() {
-	owmw, owmuv := InitOpenWeatherMap()
+	owmw, owmuv, err := InitOpenWeatherMap()
+	if err != nil {
+		logger.Fatalf("failed to initialize OpenWeatherMap: %v", err)
+	}
 
 	exporter := InitExporter()
+	defer exporter.Flush()
 	InitOpenCensusStats(exporter)
 
 	owmTicker := time.NewTicker(OWMPollInterval)
@@ -158,13 +192,22 @@ func main() {
 	for {
 		select {
 		case <-owmTicker.C:
-			owmw.CurrentByCoordinates(TargetCoodinates)
+			if err := owmw.CurrentByCoordinates(TargetCoodinates); err != nil {
+				logger.Errorf("failed to call current data from OpenWeatherMap: %v", err)
+			}
 			w := OWMToWeather(owmw, owmuv)
-			RecordMeasurement("openweathermap", w)
+			if err := RecordMeasurement("openweathermap", w); err != nil {
+				logger.Errorf("failed to record: %v", err)
+			}
 		case <-dsTicker.C:
-			f := CallDarkSkyForecast()
+			f, err := CallDarkSkyForecast()
+			if err != nil {
+				logger.Errorf("failed to call DarkSky: %v", err)
+			}
 			w := DSToWeather(f)
-			RecordMeasurement("darksky", w)
+			if err := RecordMeasurement("darksky", w); err != nil {
+				logger.Errorf("failed to record: %v", err)
+			}
 		}
 	}
 }
@@ -185,11 +228,16 @@ func GetMetricType(v *view.View) string {
 }
 
 func InitExporter() *stackdriver.Exporter {
+	labels := &stackdriver.Labels{}
+	labels.Set("location", "asia-northeast1-a", "")
+	labels.Set("namespace", "ymotongpoo", "")
+	labels.Set("node_id", "public-data", "")
 	exporter, err := stackdriver.NewExporter(stackdriver.Options{
-		ProjectID:         os.Getenv("GOOGLE_CLOUD_PROJECT"),
-		Location:          "asia-northeast1-a",
-		MonitoredResource: &GenericNodeMonitoredResource{},
-		GetMetricType:     GetMetricType,
+		ProjectID:               os.Getenv("GOOGLE_CLOUD_PROJECT"),
+		Location:                "asia-northeast1-a",
+		MonitoredResource:       &GenericNodeMonitoredResource{},
+		DefaultMonitoringLabels: labels,
+		GetMetricType:           GetMetricType,
 	})
 	if err != nil {
 		log.Fatal("failed to initialize ")
@@ -203,11 +251,11 @@ func InitOpenCensusStats(exporter *stackdriver.Exporter) {
 	view.Register(WeatherReportViews...)
 }
 
-func RecordMeasurement(id string, w *Weather) {
+func RecordMeasurement(id string, w *Weather) error {
 	ctx, err := tag.New(context.Background(), tag.Insert(KeyNodeId, id))
 	if err != nil {
-		log.Println("failed to add tag.")
-		return
+		logger.Errorf("failed to insert key: %v", err)
+		return err
 	}
 
 	stats.Record(ctx,
@@ -216,21 +264,24 @@ func RecordMeasurement(id string, w *Weather) {
 		MHumidity.M(int64(w.Humidity)),
 		MWindSpeed.M(w.WindSpeed),
 	)
+	return nil
 }
 
-func InitOpenWeatherMap() (*owm.CurrentWeatherData, *owm.UV) {
+func InitOpenWeatherMap() (*owm.CurrentWeatherData, *owm.UV, error) {
 	w, err := owm.NewCurrent("C", "EN", OWMAPIKey)
 	if err != nil {
-		log.Fatalf("failed to initialize OpenWeatherMap current weather data: %s", err)
+		logger.Errorf("failed to initialize OpenWeatherMap current weather data: %v", err)
+		return nil, nil, err
 	}
 	w.CurrentByCoordinates(TargetCoodinates)
 
 	uv, err := owm.NewUV(OWMAPIKey)
 	if err != nil {
-		log.Fatalf("failed to initialize OpenWeatherMap UV data: %s", err)
+		logger.Errorf("failed to initialize OpenWeatherMap UV data: %s", err)
+		return nil, nil, err
 	}
 	uv.Current(TargetCoodinates)
-	return w, uv
+	return w, uv, nil
 }
 
 type DarkSkyForecast struct {
@@ -252,11 +303,12 @@ type DarkSkyForecast struct {
 	} `json:"currently"`
 }
 
-func CallDarkSkyForecast() *DarkSkyForecast {
+func CallDarkSkyForecast() (*DarkSkyForecast, error) {
 	resp, err := http.Get(
 		fmt.Sprintf(DarkSkyForecastAPIURL, DarkSkyAPIKey, TargetCityLatitude, TargetCityLongitude))
 	if err != nil {
-		log.Fatalf("failed to call DarkSky forecast API: %s", err)
+		logger.Errorf("failed to call DarkSky forecast API: %s", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -264,9 +316,10 @@ func CallDarkSkyForecast() *DarkSkyForecast {
 	var f DarkSkyForecast
 	err = decoder.Decode(&f)
 	if err != nil {
-		log.Fatalf("failed to decode DarkSky reponse: %s", err)
+		logger.Errorf("failed to decode DarkSky reponse: %s", err)
+		return nil, err
 	}
-	return &f
+	return &f, nil
 }
 
 func OWMToWeather(w *owm.CurrentWeatherData, uv *owm.UV) *Weather {
