@@ -194,6 +194,7 @@ func main() {
 		case <-owmTicker.C:
 			if err := owmw.CurrentByCoordinates(TargetCoodinates); err != nil {
 				logger.Errorf("failed to call current data from OpenWeatherMap: %v", err)
+				break
 			}
 			w := OWMToWeather(owmw, owmuv)
 			if err := RecordMeasurement("openweathermap", w); err != nil {
@@ -203,6 +204,7 @@ func main() {
 			f, err := CallDarkSkyForecast()
 			if err != nil {
 				logger.Errorf("failed to call DarkSky: %v", err)
+				break
 			}
 			w := DSToWeather(f)
 			if err := RecordMeasurement("darksky", w); err != nil {
@@ -218,7 +220,6 @@ func (mr *GenericNodeMonitoredResource) MonitoredResource() (string, map[string]
 	labels := map[string]string{
 		"location":  "asia-northeast1-a",
 		"namespace": "ymotongpoo",
-		"node_id":   "public",
 	}
 	return "generic_node", labels
 }
@@ -231,7 +232,6 @@ func InitExporter() *stackdriver.Exporter {
 	labels := &stackdriver.Labels{}
 	labels.Set("location", "asia-northeast1-a", "")
 	labels.Set("namespace", "ymotongpoo", "")
-	labels.Set("node_id", "public-data", "")
 	exporter, err := stackdriver.NewExporter(stackdriver.Options{
 		ProjectID:               os.Getenv("GOOGLE_CLOUD_PROJECT"),
 		Location:                "asia-northeast1-a",
@@ -252,7 +252,7 @@ func InitOpenCensusStats(exporter *stackdriver.Exporter) {
 }
 
 func RecordMeasurement(id string, w *Weather) error {
-	ctx, err := tag.New(context.Background(), tag.Insert(KeyNodeId, id))
+	ctx, err := tag.New(context.Background(), tag.Upsert(KeyNodeId, id))
 	if err != nil {
 		logger.Errorf("failed to insert key: %v", err)
 		return err
