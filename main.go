@@ -101,8 +101,8 @@ var (
 		WindSpeedView,
 	}
 
-	// KeySource is the key for label in "generic_node",
-	KeySource, _ = tag.NewKey("source")
+	// KeyNodeId is the key for label in "generic_node",
+	KeyNodeId, _ = tag.NewKey("node_id")
 )
 
 const (
@@ -230,11 +230,14 @@ func GetMetricType(v *view.View) string {
 }
 
 func InitExporter() *stackdriver.Exporter {
+	labels := &stackdriver.Labels{}
+	labels.Set("source", "weather-api", "")
 	exporter, err := stackdriver.NewExporter(stackdriver.Options{
-		ProjectID:         os.Getenv("GOOGLE_CLOUD_PROJECT"),
-		Location:          "asia-northeast1-a",
-		MonitoredResource: &GenericNodeMonitoredResource{},
-		GetMetricType:     GetMetricType,
+		ProjectID:               os.Getenv("GOOGLE_CLOUD_PROJECT"),
+		Location:                "asia-northeast1-a",
+		MonitoredResource:       &GenericNodeMonitoredResource{},
+		DefaultMonitoringLabels: labels,
+		GetMetricType:           GetMetricType,
 	})
 	if err != nil {
 		log.Fatal("failed to initialize ")
@@ -249,7 +252,7 @@ func InitOpenCensusStats(exporter *stackdriver.Exporter) {
 }
 
 func RecordMeasurement(id string, w *Weather) error {
-	ctx, err := tag.New(context.Background(), tag.Upsert(KeySource, id))
+	ctx, err := tag.New(context.Background(), tag.Upsert(KeyNodeId, id))
 	if err != nil {
 		logger.Errorf("failed to insert key: %v", err)
 		return err
