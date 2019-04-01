@@ -54,8 +54,11 @@ const (
 	WindSpeedUnit   = "mps"
 	WindDegUnit     = "degree"
 
-	// ResouceNamespace is used for the exporter to have resource labels.
+	// ResourceNamespace is used for the exporter to have resource labels.
 	ResourceNamespace = "ymotongpoo"
+
+	// ResourceLocation is the location of resource
+	ResourceLocation = "asia-northeast1-a"
 )
 
 var (
@@ -214,13 +217,25 @@ func main() {
 	}
 }
 
-type GenericNodeMonitoredResource struct{}
+type GenericNodeMonitoredResource struct {
+	Location    string
+	NamespaceId string
+	NodeId      string
+}
+
+func NewGenericNodeMonitoredResource(location, namespace, node string) *GenericNodeMonitoredResource {
+	return &GenericNodeMonitoredResource{
+		Location:    location,
+		NamespaceId: namespace,
+		NodeId:      node,
+	}
+}
 
 func (mr *GenericNodeMonitoredResource) MonitoredResource() (string, map[string]string) {
 	labels := map[string]string{
-		"location":  "asia-northeast1-a",
-		"namespace": "ymotongpoo",
-		"node_id":   "public-data",
+		"location":  mr.Location,
+		"namespace": mr.NamespaceId,
+		"node_id":   mr.NodeId,
 	}
 	return "generic_node", labels
 }
@@ -230,12 +245,15 @@ func GetMetricType(v *view.View) string {
 }
 
 func InitExporter() *stackdriver.Exporter {
+	mr := NewGenericNodeMonitoredResource(ResourceLocation, ResourceNamespace, "public-data")
+
 	labels := &stackdriver.Labels{}
 	labels.Set("source", "weather-api", "")
+
 	exporter, err := stackdriver.NewExporter(stackdriver.Options{
 		ProjectID:               os.Getenv("GOOGLE_CLOUD_PROJECT"),
-		Location:                "asia-northeast1-a",
-		MonitoredResource:       &GenericNodeMonitoredResource{},
+		Location:                ResourceLocation,
+		MonitoredResource:       mr,
 		DefaultMonitoringLabels: labels,
 		GetMetricType:           GetMetricType,
 	})
