@@ -72,6 +72,7 @@ var (
 	TemperatureView = &view.View{
 		Name:        MeasureTemperature,
 		Measure:     MTemperature,
+		TagKeys:     []tag.Key{KeySource},
 		Description: "air temperature",
 		Aggregation: view.LastValue(),
 	}
@@ -79,6 +80,7 @@ var (
 	PressureView = &view.View{
 		Name:        MeasurePressure,
 		Measure:     MPressure,
+		TagKeys:     []tag.Key{KeySource},
 		Description: "barometric pressure",
 		Aggregation: view.LastValue(),
 	}
@@ -86,6 +88,7 @@ var (
 	HumidityView = &view.View{
 		Name:        MeasureHumidity,
 		Measure:     MHumidity,
+		TagKeys:     []tag.Key{KeySource},
 		Description: "air humidity",
 		Aggregation: view.LastValue(),
 	}
@@ -93,6 +96,7 @@ var (
 	WindSpeedView = &view.View{
 		Name:        MeasureWindSpeed,
 		Measure:     MWindSpeed,
+		TagKeys:     []tag.Key{KeySource},
 		Description: "wind speed",
 		Aggregation: view.LastValue(),
 	}
@@ -104,8 +108,8 @@ var (
 		WindSpeedView,
 	}
 
-	// KeyNodeId is the key for label in "generic_node",
-	KeyNodeId, _ = tag.NewKey("node_id")
+	// KeySource is the key for label in "generic_node",
+	KeySource, _ = tag.NewKey("source")
 )
 
 const (
@@ -246,10 +250,7 @@ func GetMetricType(v *view.View) string {
 
 func InitExporter() *stackdriver.Exporter {
 	mr := NewGenericNodeMonitoredResource(ResourceLocation, ResourceNamespace, "public-data")
-
 	labels := &stackdriver.Labels{}
-	labels.Set("source", "weather-api", "")
-
 	exporter, err := stackdriver.NewExporter(stackdriver.Options{
 		ProjectID:               os.Getenv("GOOGLE_CLOUD_PROJECT"),
 		Location:                ResourceLocation,
@@ -270,7 +271,7 @@ func InitOpenCensusStats(exporter *stackdriver.Exporter) {
 }
 
 func RecordMeasurement(id string, w *Weather) error {
-	ctx, err := tag.New(context.Background(), tag.Upsert(KeyNodeId, id))
+	ctx, err := tag.New(context.Background(), tag.Upsert(KeySource, id))
 	if err != nil {
 		logger.Errorf("failed to insert key: %v", err)
 		return err
